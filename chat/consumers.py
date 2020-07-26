@@ -1,7 +1,12 @@
 from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.generic.http import AsyncHttpConsumer
+
 from django.core.serializers.json import DjangoJSONEncoder
 import datetime
+import channels_redis
 import json
+import django.db
+import socket
 
 
 total_num_of_message_per_group = {}
@@ -10,18 +15,19 @@ total_num_of_post_per_group = {}
 total_num_of_group_members = {}
 like_num_per_group = {}
 
-vote_state_per_group = {}
+poll_state_per_group = {}
 
 
 def response_json(json_request, group_name):
     tot_num = total_num_of_message_per_group[group_name]
-    if json_request['type'] == "chat_message":
-        message = json_request['message']
+    if json_request['type'] == "text":
+        # message = json_request['message']
+        content = json_request['content']
         opinion = json_request['opinion']
-        send_time = json_request['time']
+        send_time = json_request['post_time']
         return {
             'type': 'chat_message',
-            'message': message,
+            'content': content,
             'opinion': opinion,
             'time': send_time,
             'id': tot_num
@@ -49,10 +55,12 @@ def response_json(json_request, group_name):
         }
     elif json_request['type'] == "poll_post":
         p_id = total_num_of_message_per_group[group_name]
+        total_num_of_message_per_group[group_name] += 1
+
         now = datetime.datetime.now()
         t = str(now)
 
-        vote_state_per_group[group_name][p_id] = {
+        poll_state_per_group[group_name][p_id] = {
             'post': {
                 'id': p_id,
                 'title': json_request['title'],
@@ -66,8 +74,8 @@ def response_json(json_request, group_name):
 
         return {
             'type': 'poll_view',
-            'poll_info': [vote_state_per_group[group_name][each] for each
-                              in vote_state_per_group[group_name]]
+            'poll_info': [poll_state_per_group[group_name][each] for each
+                              in poll_state_per_group[group_name]]
         }
 
     elif json_request['type'] == 'poll_vote':
@@ -76,29 +84,29 @@ def response_json(json_request, group_name):
         idx = json_request['vote_idx']
 
         # check whether vote is end or not
-        if vote_state_per_group[group_name][p_id]['post']['end'] is True:
+        if poll_state_per_group[group_name][p_id]['post']['end'] is True:
             return {
                 'type': 'poll_view',
-                'poll_info': [vote_state_per_group[group_name][each] for each
-                              in vote_state_per_group[group_name]]
+                'poll_info': [poll_state_per_group[group_name][each] for each
+                              in poll_state_per_group[group_name]]
             }
         # if vote isn't over yet, check end time is passed
         else:
             e_time = datetime.datetime.strptime(
-                vote_state_per_group[group_name][p_id]['post'][
+                poll_state_per_group[group_name][p_id]['post'][
                     'start_time'].split(".")[0],
                 '%Y-%m-%d %H:%M:%S') + datetime.timedelta(minutes=1)
             now = datetime.datetime.now()
             # if end time is passed, make end flag True and return view
             if e_time < now:
-                vote_state_per_group[group_name][p_id]["post"]['end'] = True
+                poll_state_per_group[group_name][p_id]["post"]['end'] = True
             # else, apply vote and return view
             else:
-                vote_state_per_group[group_name][p_id]["vote_state"][idx] += 1
+                poll_state_per_group[group_name][p_id]["vote_state"][idx] += 1
             return {
                 'type': 'poll_view',
-                'poll_info': [vote_state_per_group[group_name][each] for each
-                              in vote_state_per_group[group_name]]
+                'poll_info': [poll_state_per_group[group_name][each] for each
+                              in poll_state_per_group[group_name]]
             }
     else:
         content = json_request['content']
@@ -117,8 +125,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             total_num_of_message_per_group[self.room_group_name] = 0
         if self.room_group_name not in like_num_per_group:
             like_num_per_group[self.room_group_name] = {}
-        if self.room_group_name not in vote_state_per_group:
-            vote_state_per_group[self.room_group_name] = {}
+        if self.room_group_name not in poll_state_per_group:
+            poll_state_per_group[self.room_group_name] = {}
 
         # Join room group
         await self.channel_layer.group_add(
@@ -135,8 +143,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'like_list': sorted([like_num_per_group[self.room_group_name][key]
                           for key in like_num_per_group[self.room_group_name]],
                                 reverse=True),
-            'poll_info': [vote_state_per_group[self.room_group_name][each] for
-                          each in vote_state_per_group[self.room_group_name]]
+            'poll_info': [poll_state_per_group[self.room_group_name][each] for
+                          each in poll_state_per_group[self.room_group_name]]
             }
         )
 
